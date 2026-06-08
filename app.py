@@ -21,9 +21,9 @@ def zeige_eingabe_formular():
     return ticker, start, ende, abgeschickt
 
 
-# holt über yfinance den kursverlauf und gibt den letzten schlusskurs zurück
-# gibt None zurück wenn der ticker ungültig ist oder keine daten gefunden wurden
-def lade_kursdaten(ticker, start, ende):
+# holt den kursverlauf für einen ticker und zeitraum über yfinance
+# gibt einen bereinigten dataframe zurück oder None wenn keine daten gefunden wurden
+def lade_kurshistorie(ticker, start, ende):
     try:
         # tickerobjekt erstellen und kursverlauf abrufen
         aktie = yf.Ticker(ticker)
@@ -32,9 +32,40 @@ def lade_kursdaten(ticker, start, ende):
         if verlauf.empty:
             return None
 
-        # letzten schlusskurs aus der close spalte nehmen
-        letzter_schlusskurs = verlauf["Close"].iloc[-1]
-        return letzter_schlusskurs
+        # nur die spalten behalten die ich brauche und leere zeilen entfernen
+        spalten_die_ich_brauche = ["Open", "High", "Low", "Close", "Volume"]
+        verlauf = verlauf[spalten_die_ich_brauche]
+        verlauf = verlauf.dropna()
+
+        if verlauf.empty:
+            return None
+
+        return verlauf
+
+    except Exception:
+        return None
+
+
+# holt die fundamentaldaten marktkapitalisierung eps buchwert und dividende über yfinance
+def lade_fundamentaldaten(ticker):
+    try:
+        aktie = yf.Ticker(ticker)
+        info = aktie.info
+
+        # die vier benötigten felder einzeln auslesen
+        # get statt eckiger klammer verwenden damit fehlende felder nicht zum absturz führen
+        marktkapitalisierung = info.get("marketCap")
+        gewinn_je_aktie = info.get("trailingEps")
+        buchwert_je_aktie = info.get("bookValue")
+        dividende_je_aktie = info.get("dividendRate")
+
+        fundamentaldaten = {
+            "Marktkapitalisierung": marktkapitalisierung,
+            "Gewinn je Aktie": gewinn_je_aktie,
+            "Buchwert je Aktie": buchwert_je_aktie,
+            "Dividende je Aktie": dividende_je_aktie,
+        }
+        return fundamentaldaten
 
     except Exception:
         return None
@@ -47,11 +78,29 @@ st.title("Fundamentalanalyse einer Aktie")
 # eingabeformular anzeigen und eingaben einsammeln
 ticker, start, ende, abgeschickt = zeige_eingabe_formular()
 
-# bei klick auf den button kurs laden und anzeigen
+# bei klick auf den button kurshistorie und fundamentaldaten laden und anzeigen
 if abgeschickt:
-    kurs = lade_kursdaten(ticker, start, ende)
+    kurshistorie = lade_kurshistorie(ticker, start, ende)
 
-    if kurs is None:
+    if kurshistorie is None:
         st.error("Keine Kursdaten gefunden. Bitte Ticker und Zeitraum prüfen.")
     else:
-        st.metric("Letzter Schlusskurs im Zeitraum", round(kurs, 2))
+        # letzten schlusskurs aus der close spalte nehmen
+        letzter_schlusskurs = kurshistorie["Close"].iloc[-1]
+        st.metric("Letzter Schlusskurs im Zeitraum", round(letzter_schlusskurs, 2))
+
+        # gesamte bereinigte tabelle anzeigen
+        st.dataframe(kurshistorie)
+
+    # fundamentaldaten unabhängig von der kurshistorie laden und anzeigen
+    fundamentaldaten = lade_fundamentaldaten(ticker)
+
+    if fundamentaldaten is None:
+        st.warning("Keine Fundamentaldaten gefunden.")
+    else:
+        st.subheader("Fundamentaldaten")
+        for bezeichnung, wert in fundamentaldaten.items():
+            if wert is None:
+                st.write(bezeichnung + ": nicht verfügbar")
+            else:
+                st.write(bezeichnung + ": " + str(wert))
