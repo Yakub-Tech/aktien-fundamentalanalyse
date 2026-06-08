@@ -3,6 +3,9 @@
 import datetime
 import streamlit as st
 import yfinance as yf
+import re
+import requests
+from bs4 import BeautifulSoup
 
 
 # zeigt das eingabeformular an und gibt die eingaben zurück
@@ -71,6 +74,45 @@ def lade_fundamentaldaten(ticker):
         return None
 
 
+# holt das forward kgv von finviz.com per web scraping
+def lade_forward_kgv(ticker):
+    try:
+        url = "https://finviz.com/quote.ashx?t=" + ticker
+
+        # ohne user agent header sperrt finviz die anfrage mit 403 forbidden
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+
+        antwort = requests.get(url, headers=headers, timeout=10)
+        antwort.raise_for_status()
+
+        # html text parsen und alles als reinen text extrahieren
+        suppe = BeautifulSoup(antwort.text, "html.parser")
+        gesamter_text = suppe.get_text()
+
+        # mit regex nach forward p/e suchen und die direkt folgende zahl auslesen
+        treffer = re.search(r"Forward P/E([\d.]+)", gesamter_text)
+
+        if treffer is None:
+            return None
+
+        return float(treffer.group(1))
+
+    except Exception:
+        return None
+
+
+# fallback für das forward kgv liest forwardPE direkt aus yfinance aus
+def lade_forward_kgv_yfinance(ticker):
+    try:
+        aktie = yf.Ticker(ticker)
+        info = aktie.info
+        return info.get("forwardPE")
+    except Exception:
+        return None
+
+
 # hauptteil
 st.set_page_config(layout="wide")
 st.title("Fundamentalanalyse einer Aktie")
@@ -104,3 +146,15 @@ if abgeschickt:
                 st.write(bezeichnung + ": nicht verfügbar")
             else:
                 st.write(bezeichnung + ": " + str(wert))
+
+    # forward kgv zuerst über finviz versuchen sonst yfinance als fallback
+    forward_kgv = lade_forward_kgv(ticker)
+    forward_kgv_quelle = "Finviz"
+    if forward_kgv is None:
+        forward_kgv = lade_forward_kgv_yfinance(ticker)
+        forward_kgv_quelle = "yfinance (Fallback)"
+
+    if forward_kgv is None:
+        st.warning("Forward-KGV: nicht verfügbar (weder Finviz noch yfinance haben einen Wert geliefert).")
+    else:
+        st.metric("Forward-KGV (Quelle: " + forward_kgv_quelle + ")", round(forward_kgv, 2))
