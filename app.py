@@ -113,6 +113,38 @@ def lade_forward_kgv_yfinance(ticker):
         return None
 
 
+# formel forward kgv ist kurs durch erwarteten eps der wert kommt von finviz schon fertig
+# reine durchleitung damit alle vier kpis gleich strukturiert sind
+def berechne_forward_kgv(forward_kgv_wert):
+    if forward_kgv_wert is None:
+        return None
+    return forward_kgv_wert
+
+
+# formel kgv ist kurs durch gewinn je aktie trailing eps
+def berechne_kgv(kurs, gewinn_je_aktie):
+    if kurs is None or gewinn_je_aktie is None or gewinn_je_aktie <= 0:
+        return None
+    return kurs / gewinn_je_aktie
+
+
+# formel kbv ist kurs durch buchwert je aktie
+def berechne_kbv(kurs, buchwert_je_aktie):
+    if kurs is None or buchwert_je_aktie is None or buchwert_je_aktie <= 0:
+        return None
+    return kurs / buchwert_je_aktie
+
+
+# formel dividendenrendite ist dividende je aktie durch kurs mal 100
+def berechne_dividendenrendite(dividende_je_aktie, kurs):
+    if kurs is None or kurs <= 0:
+        return None
+    # keine dividende gemeldet also 0 prozent das ist ein gültiger wert
+    if dividende_je_aktie is None:
+        return 0.0
+    return (dividende_je_aktie / kurs) * 100
+
+
 # hauptteil
 st.set_page_config(layout="wide")
 st.title("Fundamentalanalyse einer Aktie")
@@ -120,9 +152,12 @@ st.title("Fundamentalanalyse einer Aktie")
 # eingabeformular anzeigen und eingaben einsammeln
 ticker, start, ende, abgeschickt = zeige_eingabe_formular()
 
-# bei klick auf den button kurshistorie und fundamentaldaten laden und anzeigen
+# bei klick auf den button kurshistorie, fundamentaldaten und kpis laden und anzeigen
 if abgeschickt:
     kurshistorie = lade_kurshistorie(ticker, start, ende)
+
+    # letzter_schlusskurs auch außerhalb des else blocks verfügbar machen
+    letzter_schlusskurs = None
 
     if kurshistorie is None:
         st.error("Keine Kursdaten gefunden. Bitte Ticker und Zeitraum prüfen.")
@@ -141,7 +176,10 @@ if abgeschickt:
         st.warning("Keine Fundamentaldaten gefunden.")
     else:
         st.subheader("Fundamentaldaten")
-        for bezeichnung, wert in fundamentaldaten.items():
+        # nur die vier rohwerte anzeigen, die kpis kommen separat im nächsten abschnitt
+        felder_anzeigen = ["Marktkapitalisierung", "Gewinn je Aktie", "Buchwert je Aktie", "Dividende je Aktie"]
+        for bezeichnung in felder_anzeigen:
+            wert = fundamentaldaten.get(bezeichnung)
             if wert is None:
                 st.write(bezeichnung + ": nicht verfügbar")
             else:
@@ -154,7 +192,34 @@ if abgeschickt:
         forward_kgv = lade_forward_kgv_yfinance(ticker)
         forward_kgv_quelle = "yfinance (Fallback)"
 
-    if forward_kgv is None:
-        st.warning("Forward-KGV: nicht verfügbar (weder Finviz noch yfinance haben einen Wert geliefert).")
-    else:
-        st.metric("Forward-KGV (Quelle: " + forward_kgv_quelle + ")", round(forward_kgv, 2))
+    # alle vier kpis berechnen, fehlende rohwerte führen zu None und werden als n/a angezeigt
+    kpi_forward_kgv = berechne_forward_kgv(forward_kgv)
+
+    gewinn_je_aktie = fundamentaldaten.get("Gewinn je Aktie") if fundamentaldaten else None
+    kpi_kgv = berechne_kgv(letzter_schlusskurs, gewinn_je_aktie)
+
+    buchwert_je_aktie = fundamentaldaten.get("Buchwert je Aktie") if fundamentaldaten else None
+    kpi_kbv = berechne_kbv(letzter_schlusskurs, buchwert_je_aktie)
+
+    dividende_je_aktie = fundamentaldaten.get("Dividende je Aktie") if fundamentaldaten else None
+    kpi_dividendenrendite = berechne_dividendenrendite(dividende_je_aktie, letzter_schlusskurs)
+
+    # alle vier kpis nebeneinander in vier spalten anzeigen
+    st.subheader("KPIs")
+    spalte1, spalte2, spalte3, spalte4 = st.columns(4)
+
+    with spalte1:
+        wert = round(kpi_forward_kgv, 2) if kpi_forward_kgv is not None else "n/a"
+        st.metric("Forward-KGV (" + forward_kgv_quelle + ")", wert)
+
+    with spalte2:
+        wert = round(kpi_kgv, 2) if kpi_kgv is not None else "n/a"
+        st.metric("KGV", wert)
+
+    with spalte3:
+        wert = round(kpi_kbv, 2) if kpi_kbv is not None else "n/a"
+        st.metric("KBV", wert)
+
+    with spalte4:
+        wert = str(round(kpi_dividendenrendite, 2)) + " %" if kpi_dividendenrendite is not None else "n/a"
+        st.metric("Dividendenrendite", wert)
