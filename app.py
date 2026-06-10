@@ -3,6 +3,7 @@
 import datetime
 import streamlit as st
 import yfinance as yf
+import pandas as pd
 import re
 import requests
 from bs4 import BeautifulSoup
@@ -198,6 +199,36 @@ def interpretiere_score(score):
         return "möglicherweise überbewertet"
 
 
+# zeigt die einschätzung als farbige box an und nennt die treiber
+# grün bei unterbewertet, gelb bei fair, rot bei überbewertet
+# punkte_dict enthält die vier kpi namen als schlüssel und die punktwerte als wert
+def zeige_einschaetzung_farbig(einschaetzung, punkte_dict):
+    # eine liste aus paaren (punktwert, kpi name) bauen und aufsteigend sortieren
+    # python sortiert tuples automatisch nach dem ersten element also nach dem punktwert
+    # so brauche ich kein lambda
+    punkte_paare = [
+        (punkte_dict["Forward KGV"], "Forward KGV"),
+        (punkte_dict["KGV"], "KGV"),
+        (punkte_dict["KBV"], "KBV"),
+        (punkte_dict["Dividende"], "Dividende"),
+    ]
+    punkte_paare.sort()
+
+    # die zwei kpis mit den niedrigsten punkten index 0 und 1 nach dem sortieren
+    niedrigste_zwei = punkte_paare[0][1] + " und " + punkte_paare[1][1]
+    # die zwei kpis mit den höchsten punkten index 2 und 3
+    hoechste_zwei = punkte_paare[2][1] + " und " + punkte_paare[3][1]
+
+    if einschaetzung == "möglicherweise unterbewertet":
+        meldung = "möglicherweise unterbewertet – günstigste Bewertung bei " + hoechste_zwei
+        st.success(meldung)
+    elif einschaetzung == "fair bewertet":
+        st.warning(einschaetzung)
+    else:
+        meldung = "möglicherweise überbewertet – hauptsächlich wegen " + niedrigste_zwei
+        st.error(meldung)
+
+
 # merkt sich welcher regler zuletzt bewegt wurde callback für on_change
 def merke_aenderung_forward_kgv():
     st.session_state["zuletzt_geaendert"] = "g_forward_kgv"
@@ -315,6 +346,13 @@ if "kurshistorie" in st.session_state:
 
     # kurshistorie anzeigen
     st.metric("Letzter Schlusskurs im Zeitraum", round(letzter_schlusskurs, 2))
+
+    # kursverlauf als linie zeichnen ich übergebe nur die spalte close
+    # weil st.line_chart mit einem ganzen dataframe alle spalten gleichzeitig zeichnet
+    # volume ist viele tausend mal größer als der kurs das würde die skala so stauchen
+    # dass die kurslinie kaum noch zu erkennen wäre
+    st.line_chart(kurshistorie["Close"])
+
     st.dataframe(kurshistorie)
 
     # fundamentaldaten anzeigen
@@ -436,4 +474,31 @@ if "kurshistorie" in st.session_state:
         else:
             einschaetzung = interpretiere_score(gesamtscore)
             st.metric("Gesamtscore (0–100)", round(gesamtscore, 1))
-            st.write("Einschätzung: " + einschaetzung)
+
+            # farbige box für die einschätzung anzeigen
+            # ich übergebe die vier einzelpunkte als dictionary damit die funktion die treiber benennen kann
+            punkte_dict = {
+                "Forward KGV": punkte_forward_kgv,
+                "KGV": punkte_kgv,
+                "KBV": punkte_kbv,
+                "Dividende": punkte_dividende,
+            }
+            zeige_einschaetzung_farbig(einschaetzung, punkte_dict)
+
+            # schwellenwerte transparent darstellen damit nachvollziehbar ist wie die einschätzung zustande kommt
+            # st.caption zeigt kleinen grauen text
+            st.caption(
+                "Einordnung: ab 65 Punkte möglicherweise unterbewertet, "
+                "40 bis 64 Punkte fair bewertet, "
+                "unter 40 Punkte möglicherweise überbewertet. "
+                "Die Grenzen sind eine Modellannahme."
+            )
+
+            # balkendiagramm der vier einzelpunkte
+            # ich baue einen kleinen dataframe weil st.bar_chart beschriftungen aus dem index liest
+            # die spalte heißt Punkte die zeilennamen werden zu den balken bezeichnungen
+            punkte_uebersicht = pd.DataFrame(
+                {"Punkte": [punkte_forward_kgv, punkte_kgv, punkte_kbv, punkte_dividende]},
+                index=["Forward KGV", "KGV", "KBV", "Dividende"],
+            )
+            st.bar_chart(punkte_uebersicht)
