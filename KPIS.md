@@ -112,3 +112,49 @@ Der Gesamtscore liegt immer zwischen 0 und 100 Punkten. Ab einem Score von 65 we
 Die 65-Grenze für "unterbewertet" liegt bewusst über der Mitte, weil eine Aktie bei gewinnorientierter Gewichtung in mehreren Dimensionen gleichzeitig günstig sein muss, um dieses Urteil zu verdienen. Die 40-Grenze für "überbewertet" liegt leicht unterhalb der Mitte, weil ein deutliches Signal in mehreren KPIs ausreicht, um auf eine teure Bewertung hinzuweisen.
 
 Der Score ist kein Kauf- oder Verkaufssignal. Er ist ein formalisiertes Bewertungsmodell auf Basis von vier Kennzahlen zu einem Stichtag. Qualitative Faktoren wie Managementqualität, Wettbewerbssituation, Schuldenstruktur oder Branchentrends fließen nicht ein.
+
+
+---
+
+
+PEER-VERGLEICH
+
+
+Warum ein Peer-Vergleich sinnvoll ist
+
+Die Schwellenwerte im Scoring-Modell sind branchenunabhängig festgelegt. Ein KGV von 30 ist bei einem Softwareunternehmen mit hohen Wachstumserwartungen üblich, bei einem Versorger wäre es außergewöhnlich teuer. Der absolute Score allein sagt deshalb wenig darüber aus, wie die Aktie im Verhältnis zu vergleichbaren Unternehmen steht.
+
+Der Peer-Vergleich ergänzt die Einzelbewertung um eine relative Perspektive. Für die eingegebenen Vergleichsunternehmen werden dieselben vier KPIs berechnet und mit denselben Gewichten und Schwellenwerten bewertet wie die Hauptaktie. So wird sichtbar, ob eine Aktie innerhalb ihrer Branche eher günstig oder eher teuer bewertet ist, auch wenn der absolute Score niedrig erscheint.
+
+Die Peers werden manuell eingegeben. Das ist eine bewusste Modellannahme: automatisch generierte Peer-Listen aus yfinance sind unzuverlässig, und die Auswahl der richtigen Vergleichsunternehmen ist selbst eine inhaltliche Entscheidung, die man in der Präsentation begründen muss.
+
+Einschränkung: Die Scores der Peers werden mit denselben Schwellenwerten berechnet wie die Hauptaktie. Wenn man Unternehmen aus verschiedenen Branchen vergleicht, gilt die gleiche Kritik wie beim Einzelscore: branchenspezifische Normen bleiben unberücksichtigt.
+
+
+---
+
+
+KGV-KORRIDOR (HISTORISCHER VERLAUF)
+
+
+Was der KGV-Korridor zeigt
+
+Der KGV-Korridor stellt dar, wie sich das Kurs-Gewinn-Verhältnis der Aktie über die letzten Geschäftsjahre entwickelt hat. Dazu wird für jedes verfügbare Jahr das KGV aus dem Jahresend-Kurs und dem tatsächlich erzielten Gewinn je Aktie berechnet. Zusätzlich wird der historische Durchschnitt als Referenzlinie eingezeichnet und das aktuelle KGV mit diesem Schnitt verglichen.
+
+Der Korridor beantwortet die Frage: Wird die Aktie aktuell teurer oder günstiger bewertet als in der eigenen Geschichte? Das ist ein Mean-Reversion-Argument: wenn das KGV deutlich über dem eigenen Schnitt liegt, kann das auf eine überdurchschnittliche Bewertungserwartung hinweisen, die sich langfristig wieder dem Durchschnitt annähern könnte.
+
+
+Wie die Berechnung funktioniert
+
+Für den historischen Gewinn je Aktie wird das Feld "Diluted EPS" aus der Jahres-Gewinn-und-Verlustrechnung von yfinance (income_stmt) ausgelesen. Als Jahresend-Kurs wird der Schlusskurs am 31. Dezember des jeweiligen Jahres verwendet, abgerufen über eine fünfjährige Kurshistorie. Der 31. Dezember dient als einheitliches Referenzdatum für alle Unternehmen, unabhängig vom tatsächlichen Geschäftsjahresende.
+
+Formel: historisches KGV (Jahr j) = Schlusskurs am 31. Dezember j / Diluted EPS des Jahres j
+
+
+Grenzen dieser Methode
+
+yfinance stellt in der Regel nur vier bis fünf vollständige Geschäftsjahre über income_stmt bereit. Für eine statistisch belastbare Aussage über den historischen Bewertungskorridor wären mindestens zehn Jahre wünschenswert. Die Interpretation mit vier Datenpunkten ist daher eine Näherung.
+
+Außerdem ist der 31. Dezember als Kurs-Referenzdatum eine Vereinfachung. Bei Unternehmen, deren Geschäftsjahr nicht am 31. Dezember endet, wie zum Beispiel Apple mit einem Jahresende am 30. September, liegt das Referenzdatum drei Monate nach dem Geschäftsjahresende. In der Praxis ist das ein bekannter Kompromiss und für den Vergleich über die eigene Geschichte hinreichend konsistent.
+
+Jahreswerte mit negativem Gewinn je Aktie werden herausgefiltert, weil ein KGV bei Verlust rechnerisch nicht sinnvoll interpretierbar ist.

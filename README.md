@@ -7,7 +7,7 @@ venv aktivieren (jedes mal bevor man etwas startet):
 source venv/bin/activate
 
 abhängigkeiten installieren (einmalig nach dem aktivieren):
-pip install streamlit yfinance requests beautifulsoup4 pandas
+pip install streamlit yfinance requests beautifulsoup4 pandas fpdf2 matplotlib
 
 die haupt-app starten:
 streamlit run app.py

@@ -1,12 +1,20 @@
 # run mit streamlit run app.py
 
 import datetime
+import io
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import re
 import requests
 from bs4 import BeautifulSoup
+# matplotlib backend agg ist nicht interaktiv und öffnet kein fenster
+# das brauche ich weil streamlit kein eigenes grafik fenster hat
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+# fpdf2 baut die pdf datei seitenweise auf
+from fpdf import FPDF
 
 
 # zeigt das eingabeformular an und gibt die eingaben zurück
@@ -20,9 +28,14 @@ def zeige_eingabe_formular():
         ticker = st.text_input("Ticker", value="AAPL")
         start = st.date_input("Startdatum", value=ein_jahr_zurueck)
         ende = st.date_input("Enddatum", value=heute)
+
+        # kommagetrennte eingabe für vergleichsunternehmen
+        # der standardwert zeigt direkt ein beispiel damit das format klar ist
+        peers_eingabe = st.text_input("Vergleichsunternehmen (Ticker, kommagetrennt)", value="MSFT, GOOGL")
+
         abgeschickt = st.form_submit_button("Kurs abrufen")
 
-    return ticker, start, ende, abgeschickt
+    return ticker, start, ende, peers_eingabe, abgeschickt
 
 
 # holt den kursverlauf für einen ticker und zeitraum über yfinance
@@ -284,12 +297,370 @@ def normalisiere_gewichte():
         st.session_state[andere_keys[2]] = restbetrag - 2 * (restbetrag // 3)
 
 
+# liest die historischen eps werte aus der jahres guv von yfinance
+# gibt ein dict jahr zu eps zurück negative und fehlende werte werden übersprungen
+def lade_historische_eps(ticker):
+    try:
+        aktie = yf.Ticker(ticker)
+        jahres_guv = aktie.income_stmt
+
+        if jahres_guv is None or jahres_guv.empty:
+            return {}
+
+        if "Diluted EPS" not in jahres_guv.index:
+            return {}
+
+        # die zeile mit dem verwässerten eps auswählen
+        eps_zeile = jahres_guv.loc["Diluted EPS"]
+
+        # für jedes jahr prüfen ob ein gültiger positiver eps wert vorliegt
+        eps_pro_jahr = {}
+        for datum, wert in eps_zeile.items():
+            if not pd.isna(wert) and wert > 0:
+                jahr = datum.year
+                eps_pro_jahr[jahr] = wert
+
+        return eps_pro_jahr
+
+    except Exception:
+        return {}
+
+
+# berechnet das kgv für jedes jahr im eps dict jeweils auf basis des kurses am 31.12.
+def berechne_kgv_verlauf(ticker, eps_pro_jahr):
+    if not eps_pro_jahr:
+        return {}
+    try:
+        aktie = yf.Ticker(ticker)
+        kurshistorie_lang = aktie.history(period="5y")
+
+        if kurshistorie_lang.empty:
+            return {}
+
+        close_serie = kurshistorie_lang["Close"].copy()
+
+        # timezone aus dem index entfernen sonst schlägt der vergleich mit pd.Timestamp fehl
+        if close_serie.index.tz is not None:
+            close_serie.index = close_serie.index.tz_convert(None)
+
+        # für jedes jahr den kurs am jahresende suchen und das kgv berechnen
+        kgv_verlauf = {}
+        for jahr, eps in eps_pro_jahr.items():
+            zieldatum = pd.Timestamp(str(jahr) + "-12-31")
+            # asof nimmt den letzten handelstag vor dem zieldatum falls der 31.12. auf ein wochenende fällt
+            kurs_am_jahresende = close_serie.asof(zieldatum)
+
+            if pd.isna(kurs_am_jahresende):
+                continue
+
+            kgv_verlauf[jahr] = kurs_am_jahresende / eps
+
+        return kgv_verlauf
+
+    except Exception:
+        return {}
+
+
+# holt den letzten verfügbaren schlusskurs period 5d wegen wochenenden und feiertagen
+def lade_letzten_kurs(ticker):
+    try:
+        aktie = yf.Ticker(ticker)
+        verlauf = aktie.history(period="5d")
+        if verlauf.empty:
+            return None
+        return verlauf["Close"].iloc[-1]
+    except Exception:
+        return None
+
+
+# fasst die gesamte kpi berechnung für einen ticker zusammen
+# hauptaktie und peers nutzen dieselbe funktion
+def berechne_alle_kpis(ticker, kurs):
+    fundamentaldaten = lade_fundamentaldaten(ticker)
+
+    # forward kgv zuerst über finviz versuchen sonst yfinance als fallback
+    forward_kgv_wert = lade_forward_kgv(ticker)
+    forward_kgv_quelle = "Finviz"
+    if forward_kgv_wert is None:
+        forward_kgv_wert = lade_forward_kgv_yfinance(ticker)
+        forward_kgv_quelle = "yfinance (Fallback)"
+
+    kpi_forward_kgv = berechne_forward_kgv(forward_kgv_wert)
+
+    gewinn_je_aktie = fundamentaldaten.get("Gewinn je Aktie") if fundamentaldaten else None
+    kpi_kgv = berechne_kgv(kurs, gewinn_je_aktie)
+
+    buchwert_je_aktie = fundamentaldaten.get("Buchwert je Aktie") if fundamentaldaten else None
+    kpi_kbv = berechne_kbv(kurs, buchwert_je_aktie)
+
+    dividende_je_aktie = fundamentaldaten.get("Dividende je Aktie") if fundamentaldaten else None
+    kpi_dividendenrendite = berechne_dividendenrendite(dividende_je_aktie, kurs)
+
+    return {
+        "Forward KGV": kpi_forward_kgv,
+        "KGV": kpi_kgv,
+        "KBV": kpi_kbv,
+        "Dividende": kpi_dividendenrendite,
+        "forward_kgv_quelle": forward_kgv_quelle,
+        "fundamentaldaten": fundamentaldaten,
+    }
+
+
+# erstellt das kpi balkendiagramm als png im arbeitsspeicher io.BytesIO
+def erzeuge_kpi_balken_png(punkte_dict):
+    namen = list(punkte_dict.keys())
+    # fehlende werte None als 0 darstellen
+    werte = [wert if wert is not None else 0 for wert in punkte_dict.values()]
+
+    fig, ax = plt.subplots(figsize=(6, 2.5))
+    balken = ax.bar(namen, werte, color="#4472C4")
+    ax.set_ylim(0, 100)
+    ax.set_ylabel("Punkte (0–100)")
+    ax.set_title("KPI-Einzelpunkte")
+
+    # über jedem balken den punktwert als text anzeigen
+    for element, wert in zip(balken, werte):
+        ax.text(
+            element.get_x() + element.get_width() / 2,
+            element.get_height() + 1,
+            str(round(wert, 1)),
+            ha="center", va="bottom", fontsize=9,
+        )
+
+    plt.tight_layout()
+    # diagramm in einen byte puffer statt auf die festplatte schreiben
+    puffer = io.BytesIO()
+    plt.savefig(puffer, format="png", dpi=100)
+    # leseposition zurück auf den anfang setzen
+    puffer.seek(0)
+    plt.close(fig)
+    return puffer
+
+
+# erstellt das kgv korridor diagramm als png im arbeitsspeicher
+def erzeuge_kgv_korridor_png(kgv_verlauf, aktuelles_kgv):
+    if not kgv_verlauf:
+        return None
+
+    # jahre aufsteigend sortieren damit die linie von links nach rechts verläuft
+    jahre = sorted(kgv_verlauf.keys())
+    werte = [kgv_verlauf[j] for j in jahre]
+    durchschnitt = sum(werte) / len(werte)
+
+    fig, ax = plt.subplots(figsize=(6, 2.5))
+    ax.plot(jahre, werte, marker="o", color="#4472C4", label="KGV historisch")
+    ax.axhline(durchschnitt, linestyle="--", color="#808080",
+               label="Ø " + str(round(durchschnitt, 1)))
+    if aktuelles_kgv is not None:
+        ax.axhline(aktuelles_kgv, linestyle=":", color="#E74C3C",
+                   label="Aktuell " + str(round(aktuelles_kgv, 1)))
+
+    ax.set_xlabel("Jahr")
+    ax.set_ylabel("KGV")
+    ax.set_title("KGV-Korridor")
+    ax.legend(fontsize=8)
+    plt.tight_layout()
+
+    puffer = io.BytesIO()
+    plt.savefig(puffer, format="png", dpi=100)
+    puffer.seek(0)
+    plt.close(fig)
+    return puffer
+
+
+# baut den vollständigen pdf bericht und gibt ihn als bytes zurück
+# fpdf2 arbeitet seitenweise add_page öffnet eine seite dann werden mit cell multi_cell und image inhalte platziert
+# pdf.ln bewegt den cursor eine zeile weiter
+def erzeuge_pdf_report(
+    ticker,
+    datum,
+    kpi_forward_kgv,
+    kpi_kgv,
+    kpi_kbv,
+    kpi_dividendenrendite,
+    punkte_dict,
+    gewichte_dict,
+    gesamtscore,
+    einschaetzung,
+    kgv_verlauf,
+    peer_kpis_liste,
+    png_balken,
+    png_korridor,
+):
+    # hilfsfunktion zum formatieren von zahlen None wird zu n/a
+    def als_text(wert, stellen=2, einheit=""):
+        if wert is None:
+            return "n/a"
+        return str(round(wert, stellen)) + einheit
+
+    pdf = FPDF()
+    pdf.set_margins(left=15, top=15, right=15)
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    # titelzeile
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 10, "Fundamentalanalyse - " + ticker)
+    pdf.ln()
+    pdf.set_font("Helvetica", size=10)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 6, "Erstellt am " + datum)
+    pdf.ln()
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(4)
+    pdf.set_draw_color(180, 180, 180)
+    pdf.line(15, pdf.get_y(), 195, pdf.get_y())
+    pdf.ln(6)
+
+    # kpi tabelle
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 8, "KPIs")
+    pdf.ln()
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(80, 6, "Kennzahl", border=1)
+    pdf.cell(40, 6, "Wert", border=1)
+    pdf.ln()
+    pdf.set_font("Helvetica", size=9)
+
+    kpi_zeilen = [
+        ("Forward-KGV",      kpi_forward_kgv,      ""),
+        ("KGV",              kpi_kgv,              ""),
+        ("KBV",              kpi_kbv,              ""),
+        ("Dividendenrendite", kpi_dividendenrendite, " %"),
+    ]
+    for bezeichnung, wert, einheit in kpi_zeilen:
+        pdf.cell(80, 6, bezeichnung, border=1)
+        pdf.cell(40, 6, als_text(wert, einheit=einheit), border=1)
+        pdf.ln()
+
+    pdf.ln(5)
+
+    # scoring modell
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(0, 8, "Scoring-Modell")
+    pdf.ln()
+
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(0, 5, "Gewichtung:")
+    pdf.ln()
+    pdf.set_font("Helvetica", size=9)
+    reihenfolge = ["Forward KGV", "KGV", "KBV", "Dividende"]
+    for name in reihenfolge:
+        pdf.cell(45, 6, name + ": " + str(gewichte_dict.get(name, 0)) + " %", border=1)
+    pdf.ln()
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.cell(0, 5, "Einzelpunkte (0-100):")
+    pdf.ln()
+    pdf.set_font("Helvetica", size=9)
+    for name in reihenfolge:
+        punkte = punkte_dict.get(name)
+        pdf.cell(45, 6, name + ": " + als_text(punkte, stellen=1), border=1)
+    pdf.ln()
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 7, "Gesamtscore: " + als_text(gesamtscore, stellen=1) + " / 100")
+    pdf.ln()
+    pdf.cell(0, 7, "Einschaetzung: " + (einschaetzung or "n/a"))
+    pdf.ln()
+    pdf.ln(3)
+
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(120, 120, 120)
+    pdf.multi_cell(0, 5,
+        "Hinweis: Dieses Modell basiert auf vier Kennzahlen mit festen Schwellenwerten. "
+        "Die Einschaetzung ist eine vereinfachende Naeherung und keine Kauf- oder Verkaufsempfehlung.")
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(4)
+
+    # kpi balkendiagramm
+    if png_balken is not None:
+        # bild ist ca 75mm hoch plus überschrift ca 17mm
+        # wenn nicht genug platz übrig ist fange ich eine neue seite an
+        # damit überschrift und bild zusammen auf derselben seite landen
+        verbleibend = pdf.h - pdf.get_y() - pdf.b_margin
+        if verbleibend < 92:
+            pdf.add_page()
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.cell(0, 8, "KPI-Visualisierung")
+        pdf.ln()
+        png_balken.seek(0)
+        pdf.image(png_balken, x=15, w=180)
+        pdf.ln(5)
+
+    # kgv korridor
+    if png_korridor is not None:
+        # gleiche prüfung überschrift und bild müssen auf dieselbe seite passen
+        verbleibend = pdf.h - pdf.get_y() - pdf.b_margin
+        if verbleibend < 92:
+            pdf.add_page()
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.cell(0, 8, "KGV-Korridor (historisch)")
+        pdf.ln()
+        png_korridor.seek(0)
+        pdf.image(png_korridor, x=15, w=180)
+        pdf.ln(5)
+
+    # peer vergleich
+    if peer_kpis_liste:
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.cell(0, 8, "Peer-Vergleich")
+        pdf.ln()
+
+        # gewichte als anteile zwischen 0 und 1 für die score berechnung der peers
+        w_fkgv = gewichte_dict.get("Forward KGV", 0) / 100
+        w_kgv  = gewichte_dict.get("KGV", 0) / 100
+        w_kbv  = gewichte_dict.get("KBV", 0) / 100
+        w_div  = gewichte_dict.get("Dividende", 0) / 100
+
+        spalten = ["Ticker", "Fwd-KGV", "KGV", "KBV", "Div%", "Score", "Einschaetzung"]
+        breiten = [22, 22, 22, 22, 22, 20, 50]
+        pdf.set_font("Helvetica", "B", 8)
+        for spalte, breite in zip(spalten, breiten):
+            pdf.cell(breite, 6, spalte, border=1)
+        pdf.ln()
+
+        # erste zeile ist die hauptaktie dann folgen die peers
+        alle_zeilen = [
+            {
+                "ticker":      ticker,
+                "Forward KGV": kpi_forward_kgv,
+                "KGV":         kpi_kgv,
+                "KBV":         kpi_kbv,
+                "Dividende":   kpi_dividendenrendite,
+            }
+        ] + peer_kpis_liste
+
+        pdf.set_font("Helvetica", size=8)
+        for zeile in alle_zeilen:
+            p_fkgv = normalisiere_niedriger_besser(zeile.get("Forward KGV"), 12, 35)
+            p_kgv  = normalisiere_niedriger_besser(zeile.get("KGV"),         12, 35)
+            p_kbv  = normalisiere_niedriger_besser(zeile.get("KBV"),         1.5, 5)
+            p_div  = normalisiere_hoeher_besser(zeile.get("Dividende"),      4,   0)
+            zeilen_score = berechne_gesamtscore(
+                p_fkgv, p_kgv, p_kbv, p_div, w_fkgv, w_kgv, w_kbv, w_div)
+            zeilen_einschaetzung = interpretiere_score(zeilen_score) or "n/a"
+
+            pdf.cell(22, 6, zeile.get("ticker", ""),          border=1)
+            pdf.cell(22, 6, als_text(zeile.get("Forward KGV")), border=1)
+            pdf.cell(22, 6, als_text(zeile.get("KGV")),          border=1)
+            pdf.cell(22, 6, als_text(zeile.get("KBV")),          border=1)
+            pdf.cell(22, 6, als_text(zeile.get("Dividende")),    border=1)
+            pdf.cell(20, 6, als_text(zeilen_score, stellen=1),   border=1)
+            pdf.cell(50, 6, zeilen_einschaetzung,                border=1)
+            pdf.ln()
+
+    return bytes(pdf.output())
+
+
 # hauptteil
 st.set_page_config(layout="wide")
 st.title("Fundamentalanalyse einer Aktie")
 
 # eingabeformular anzeigen und eingaben einsammeln
-ticker, start, ende, abgeschickt = zeige_eingabe_formular()
+ticker, start, ende, peers_eingabe, abgeschickt = zeige_eingabe_formular()
 
 # bei klick auf den button alle daten laden und in session_state ablegen
 # die anzeige passiert danach in einem eigenen block damit sie auch beim verschieben der regler bleibt
@@ -299,37 +670,58 @@ if abgeschickt:
     if kurshistorie is None:
         st.error("Keine Kursdaten gefunden. Bitte Ticker und Zeitraum prüfen.")
         # alten stand löschen damit keine veralteten daten angezeigt werden
-        for key in ["kurshistorie", "letzter_schlusskurs", "fundamentaldaten",
+        for key in ["haupt_ticker", "kurshistorie", "letzter_schlusskurs", "fundamentaldaten",
                     "forward_kgv_quelle", "kpi_forward_kgv", "kpi_kgv",
-                    "kpi_kbv", "kpi_dividendenrendite"]:
+                    "kpi_kbv", "kpi_dividendenrendite", "peer_kpis_liste",
+                    "historische_eps", "kgv_verlauf"]:
             st.session_state.pop(key, None)
     else:
         letzter_schlusskurs = kurshistorie["Close"].iloc[-1]
-        fundamentaldaten = lade_fundamentaldaten(ticker)
 
-        forward_kgv = lade_forward_kgv(ticker)
-        forward_kgv_quelle = "Finviz"
-        if forward_kgv is None:
-            forward_kgv = lade_forward_kgv_yfinance(ticker)
-            forward_kgv_quelle = "yfinance (Fallback)"
+        # berechne_alle_kpis übernimmt das laden der fundamentaldaten und das berechnen der vier kpi werte
+        # der kurs aus der bereits geladenen kurshistorie wird übergeben damit kein zweiter abruf nötig ist
+        kpis = berechne_alle_kpis(ticker, letzter_schlusskurs)
+        fundamentaldaten = kpis["fundamentaldaten"]
 
-        kpi_forward_kgv = berechne_forward_kgv(forward_kgv)
-        gewinn_je_aktie = fundamentaldaten.get("Gewinn je Aktie") if fundamentaldaten else None
-        kpi_kgv = berechne_kgv(letzter_schlusskurs, gewinn_je_aktie)
-        buchwert_je_aktie = fundamentaldaten.get("Buchwert je Aktie") if fundamentaldaten else None
-        kpi_kbv = berechne_kbv(letzter_schlusskurs, buchwert_je_aktie)
-        dividende_je_aktie = fundamentaldaten.get("Dividende je Aktie") if fundamentaldaten else None
-        kpi_dividendenrendite = berechne_dividendenrendite(dividende_je_aktie, letzter_schlusskurs)
+        historische_eps = lade_historische_eps(ticker)
+        kgv_verlauf = berechne_kgv_verlauf(ticker, historische_eps)
 
         # alles in session_state ablegen damit die anzeige unabhängig vom formular funktioniert
+        st.session_state["haupt_ticker"] = ticker
+        st.session_state["historische_eps"] = historische_eps
+        st.session_state["kgv_verlauf"] = kgv_verlauf
         st.session_state["kurshistorie"] = kurshistorie
         st.session_state["letzter_schlusskurs"] = letzter_schlusskurs
         st.session_state["fundamentaldaten"] = fundamentaldaten
-        st.session_state["forward_kgv_quelle"] = forward_kgv_quelle
-        st.session_state["kpi_forward_kgv"] = kpi_forward_kgv
-        st.session_state["kpi_kgv"] = kpi_kgv
-        st.session_state["kpi_kbv"] = kpi_kbv
-        st.session_state["kpi_dividendenrendite"] = kpi_dividendenrendite
+        st.session_state["forward_kgv_quelle"] = kpis["forward_kgv_quelle"]
+        st.session_state["kpi_forward_kgv"] = kpis["Forward KGV"]
+        st.session_state["kpi_kgv"] = kpis["KGV"]
+        st.session_state["kpi_kbv"] = kpis["KBV"]
+        st.session_state["kpi_dividendenrendite"] = kpis["Dividende"]
+
+        # peer ticker aus der eingabe parsen
+        # ich trenne am komma entferne leerzeichen mit strip und wandle in großbuchstaben um
+        # leere einträge zum beispiel bei einem komma am ende filtere ich heraus
+        peer_ticker_liste = []
+        for teil in peers_eingabe.split(","):
+            bereinigt = teil.strip().upper()
+            if bereinigt:
+                peer_ticker_liste.append(bereinigt)
+
+        # für jeden peer ticker kurs und kpis laden und in einer liste sammeln
+        # schlägt ein ticker fehl überspringe ich ihn mit einer warnung statt die app abzustürzen
+        peer_kpis_liste = []
+        for peer_ticker in peer_ticker_liste:
+            peer_kurs = lade_letzten_kurs(peer_ticker)
+            if peer_kurs is None:
+                st.warning("Für " + peer_ticker + " wurden keine Kursdaten gefunden – übersprungen.")
+                continue
+            peer_kpis = berechne_alle_kpis(peer_ticker, peer_kurs)
+            # ticker als feld hinzufügen damit ich in der tabelle weiß zu wem die werte gehören
+            peer_kpis["ticker"] = peer_ticker
+            peer_kpis_liste.append(peer_kpis)
+
+        st.session_state["peer_kpis_liste"] = peer_kpis_liste
 
 
 # anzeige läuft immer solange daten in session_state vorhanden sind
@@ -367,6 +759,47 @@ if "kurshistorie" in st.session_state:
                 st.write(bezeichnung + ": nicht verfügbar")
             else:
                 st.write(bezeichnung + ": " + str(wert))
+
+    # kgv korridor historisches kgv pro jahr als linie dazu der durchschnitt als referenz
+    st.subheader("KGV-Korridor")
+    kgv_verlauf = st.session_state.get("kgv_verlauf", {})
+
+    if not kgv_verlauf:
+        st.info("Für diese Aktie sind keine historischen EPS-Daten verfügbar – der KGV-Korridor kann nicht berechnet werden.")
+    else:
+        # durchschnitt über alle verfügbaren jahre berechnen
+        kgv_werte = list(kgv_verlauf.values())
+        kgv_durchschnitt = sum(kgv_werte) / len(kgv_werte)
+
+        # jahre sortieren damit die x achse chronologisch läuft
+        kgv_jahre = sorted(kgv_verlauf.keys())
+
+        # dataframe mit zwei spalten einmal die jahreswerte einmal der durchschnitt
+        # den durchschnitt als eigene spalte zu übergeben ist der einfachste weg
+        # eine horizontale referenzlinie in st.line_chart darzustellen
+        kgv_tabelle = pd.DataFrame(
+            {
+                "KGV (historisch)": [round(kgv_verlauf[j], 1) for j in kgv_jahre],
+                "Durchschnitt":     [round(kgv_durchschnitt, 1) for _ in kgv_jahre],
+            },
+            index=kgv_jahre,
+        )
+        st.line_chart(kgv_tabelle)
+
+        # einordnung aktuelles kgv gegen den historischen schnitt
+        aktuelles_kgv = st.session_state.get("kpi_kgv")
+        if aktuelles_kgv is not None:
+            abweichung = ((aktuelles_kgv - kgv_durchschnitt) / kgv_durchschnitt) * 100
+            richtung = "über" if abweichung > 0 else "unter"
+            st.caption(
+                "Historischer Durchschnitt ("
+                + str(min(kgv_jahre)) + "–" + str(max(kgv_jahre)) + "): "
+                + str(round(kgv_durchschnitt, 1))
+                + "  |  Aktuelles KGV: " + str(round(aktuelles_kgv, 1))
+                + "  |  Das aktuelle KGV liegt "
+                + str(round(abs(abweichung), 1)) + " % "
+                + richtung + " dem historischen Schnitt."
+            )
 
     # kpis anzeigen
     st.subheader("KPIs")
@@ -502,3 +935,102 @@ if "kurshistorie" in st.session_state:
                 index=["Forward KGV", "KGV", "KBV", "Dividende"],
             )
             st.bar_chart(punkte_uebersicht)
+
+            # peer vergleich nur anzeigen wenn peers geladen sind
+            if "peer_kpis_liste" in st.session_state and st.session_state["peer_kpis_liste"]:
+                st.subheader("Peer-Vergleich")
+
+                # alle ticker in einer liste sammeln hauptaktie zuerst dann peers
+                # haupt_ticker kommt aus session_state damit er auch nach einem neustart ohne formular klick noch korrekt ist
+                haupt_ticker = st.session_state.get("haupt_ticker", "Hauptaktie")
+                alle_ticker = [haupt_ticker]
+                alle_kpi_werte = [{
+                    "Forward KGV": st.session_state["kpi_forward_kgv"],
+                    "KGV":         st.session_state["kpi_kgv"],
+                    "KBV":         st.session_state["kpi_kbv"],
+                    "Dividende":   st.session_state["kpi_dividendenrendite"],
+                }]
+
+                for peer in st.session_state["peer_kpis_liste"]:
+                    alle_ticker.append(peer["ticker"])
+                    alle_kpi_werte.append({
+                        "Forward KGV": peer["Forward KGV"],
+                        "KGV":         peer["KGV"],
+                        "KBV":         peer["KBV"],
+                        "Dividende":   peer["Dividende"],
+                    })
+
+                # für jeden ticker die punkte und den score mit denselben gewichten und schwellenwerten wie die hauptaktie berechnen
+                zeilen = []
+                for kpis in alle_kpi_werte:
+                    p_fkgv = normalisiere_niedriger_besser(kpis["Forward KGV"], gut_grenze=12, schlecht_grenze=35)
+                    p_kgv  = normalisiere_niedriger_besser(kpis["KGV"],         gut_grenze=12, schlecht_grenze=35)
+                    p_kbv  = normalisiere_niedriger_besser(kpis["KBV"],         gut_grenze=1.5, schlecht_grenze=5)
+                    p_div  = normalisiere_hoeher_besser(kpis["Dividende"],      gut_grenze=4,  schlecht_grenze=0)
+
+                    score = berechne_gesamtscore(
+                        p_fkgv, p_kgv, p_kbv, p_div,
+                        w_forward_kgv, w_kgv, w_kbv, w_dividende)
+                    einschaetzung_zeile = interpretiere_score(score)
+
+                    # hilfsfunktion zum formatieren None wird zu n/a
+                    def fmt(wert, nachkommastellen=2):
+                        if wert is None:
+                            return "n/a"
+                        return round(wert, nachkommastellen)
+
+                    zeile = {
+                        "Forward KGV":        fmt(kpis["Forward KGV"]),
+                        "KGV":                fmt(kpis["KGV"]),
+                        "KBV":                fmt(kpis["KBV"]),
+                        "Dividendenrendite %": fmt(kpis["Dividende"]),
+                        "Score":              fmt(score, 1),
+                        "Einschätzung":       einschaetzung_zeile if einschaetzung_zeile else "n/a",
+                    }
+                    zeilen.append(zeile)
+
+                # dataframe bauen jede zeile ist ein ticker die ticker namen werden zum index
+                vergleich_tabelle = pd.DataFrame(zeilen, index=alle_ticker)
+                st.dataframe(vergleich_tabelle)
+
+            # pdf download
+            st.subheader("PDF-Report")
+
+            # matplotlib diagramme im speicher erzeugen statt auf festplatte zu schreiben
+            png_balken = erzeuge_kpi_balken_png(punkte_dict)
+            kgv_verlauf_fuer_pdf = st.session_state.get("kgv_verlauf", {})
+            png_korridor = erzeuge_kgv_korridor_png(
+                kgv_verlauf_fuer_pdf,
+                st.session_state.get("kpi_kgv"),
+            )
+
+            pdf_bytes = erzeuge_pdf_report(
+                ticker=st.session_state.get("haupt_ticker", ""),
+                datum=datetime.date.today().strftime("%d.%m.%Y"),
+                kpi_forward_kgv=st.session_state["kpi_forward_kgv"],
+                kpi_kgv=st.session_state["kpi_kgv"],
+                kpi_kbv=st.session_state["kpi_kbv"],
+                kpi_dividendenrendite=st.session_state["kpi_dividendenrendite"],
+                punkte_dict=punkte_dict,
+                gewichte_dict={
+                    "Forward KGV": gewicht_forward_kgv,
+                    "KGV":         gewicht_kgv,
+                    "KBV":         gewicht_kbv,
+                    "Dividende":   gewicht_dividende,
+                },
+                gesamtscore=gesamtscore,
+                einschaetzung=einschaetzung,
+                kgv_verlauf=kgv_verlauf_fuer_pdf,
+                peer_kpis_liste=st.session_state.get("peer_kpis_liste", []),
+                png_balken=png_balken,
+                png_korridor=png_korridor,
+            )
+
+            # dateiname aus dem ticker alles kleingeschrieben
+            dateiname = st.session_state.get("haupt_ticker", "aktie").lower() + "_fundamentalanalyse.pdf"
+            st.download_button(
+                label="Bericht als PDF herunterladen",
+                data=pdf_bytes,
+                file_name=dateiname,
+                mime="application/pdf",
+            )
