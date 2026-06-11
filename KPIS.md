@@ -102,7 +102,7 @@ Warum die Gewichte in der App als Schieberegler einstellbar sind
 
 Die Gewichte sind eine Modellannahme, keine objektive Wahrheit. Ein einkommensorientierter Anleger würde der Dividendenrendite deutlich mehr Gewicht geben als ein Wachstumsinvestor. Die Schieberegler in der App machen genau das sichtbar: das Ergebnis hängt vom Modell ab und nicht nur von den Daten. Wer die Regler verschiebt, sieht sofort, wie sich der Gesamtscore verändert. Das ist kein Fehler im Modell, sondern zeigt bewusst, dass jede Gewichtung eine Annahme ist.
 
-In der App erscheint deshalb ein Hinweis: "Die Standardgewichte spiegeln eine gewinnorientierte Anlegerperspektive wider. Das Verschieben der Regler verändert den Gesamtscore und damit die Bewertungseinschätzung. Jede Gewichtung ist eine Annahme."
+In der App machen die Schieberegler genau das sichtbar: wer die Regler verschiebt, sieht sofort, wie sich der Gesamtscore verändert. Das ist kein Fehler im Modell, sondern zeigt bewusst, dass jede Gewichtung eine Annahme ist.
 
 
 Wie ich den Gesamtscore interpretiere
