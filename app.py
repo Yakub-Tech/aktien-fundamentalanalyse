@@ -212,33 +212,46 @@ def interpretiere_score(score):
         return "möglicherweise überbewertet"
 
 
-# zeigt die einschätzung als farbige box an und nennt die treiber
-# grün bei unterbewertet, gelb bei fair, rot bei überbewertet
-# punkte_dict enthält die vier kpi namen als schlüssel und die punktwerte als wert
-def zeige_einschaetzung_farbig(einschaetzung, punkte_dict):
-    # eine liste aus paaren (punktwert, kpi name) bauen und aufsteigend sortieren
-    # python sortiert tuples automatisch nach dem ersten element also nach dem punktwert
-    # so brauche ich kein lambda
-    punkte_paare = [
-        (punkte_dict["Forward KGV"], "Forward KGV"),
-        (punkte_dict["KGV"], "KGV"),
-        (punkte_dict["KBV"], "KBV"),
-        (punkte_dict["Dividende"], "Dividende"),
-    ]
-    punkte_paare.sort()
+# gibt die namen der wichtigsten treiber kpis zurück beitrag größer 0 und höchstens zwei
+def nenne_treiber_kpis(beitraege):
+    relevante_namen = []
+    for beitrag, name in beitraege:
+        if beitrag > 0:
+            relevante_namen.append(name)
 
-    # die zwei kpis mit den niedrigsten punkten index 0 und 1 nach dem sortieren
-    niedrigste_zwei = punkte_paare[0][1] + " und " + punkte_paare[1][1]
-    # die zwei kpis mit den höchsten punkten index 2 und 3
-    hoechste_zwei = punkte_paare[2][1] + " und " + punkte_paare[3][1]
+    relevante_namen = relevante_namen[:2]
+    return " und ".join(relevante_namen)
+
+
+# zeigt die einschätzung als farbige box an und nennt die treiber kpis
+# grün bei unterbewertet gelb bei fair rot bei überbewertet
+def zeige_einschaetzung_farbig(einschaetzung, punkte_dict, gewichte_dict):
+    namen = ["Forward KGV", "KGV", "KBV", "Dividende"]
+
+    # für jeden kpi den positiven beitrag zum score und den fehlbetrag zum maximum sammeln
+    positive_beitraege = []
+    fehlbetraege = []
+    for name in namen:
+        gewicht = gewichte_dict[name]
+        punkte = punkte_dict[name]
+        positive_beitraege.append((gewicht * punkte, name))
+        fehlbetraege.append((gewicht * (100 - punkte), name))
+
+    # absteigend sortieren größter beitrag zuerst
+    positive_beitraege.sort(reverse=True)
+    fehlbetraege.sort(reverse=True)
 
     if einschaetzung == "möglicherweise unterbewertet":
-        meldung = "möglicherweise unterbewertet – günstigste Bewertung bei " + hoechste_zwei
+        # die kpis mit dem größten positiven beitrag tragen den hohen score
+        hoechste = nenne_treiber_kpis(positive_beitraege)
+        meldung = "möglicherweise unterbewertet – günstigste Bewertung bei " + hoechste
         st.success(meldung)
     elif einschaetzung == "fair bewertet":
         st.warning(einschaetzung)
     else:
-        meldung = "möglicherweise überbewertet – hauptsächlich wegen " + niedrigste_zwei
+        # die kpis mit dem größten fehlbetrag drücken den score am stärksten
+        groesste_treiber = nenne_treiber_kpis(fehlbetraege)
+        meldung = "möglicherweise überbewertet – hauptsächlich wegen " + groesste_treiber
         st.error(meldung)
 
 
@@ -916,7 +929,15 @@ if "kurshistorie" in st.session_state:
                 "KBV": punkte_kbv,
                 "Dividende": punkte_dividende,
             }
-            zeige_einschaetzung_farbig(einschaetzung, punkte_dict)
+            # die gewichte als anteile (0 bis 1) mitgeben, damit die treiber-aussage
+            # die aktuelle reglerstellung berücksichtigt.
+            gewichte_anteile = {
+                "Forward KGV": w_forward_kgv,
+                "KGV": w_kgv,
+                "KBV": w_kbv,
+                "Dividende": w_dividende,
+            }
+            zeige_einschaetzung_farbig(einschaetzung, punkte_dict, gewichte_anteile)
 
             # schwellenwerte transparent darstellen damit nachvollziehbar ist wie die einschätzung zustande kommt
             # st.caption zeigt kleinen grauen text
