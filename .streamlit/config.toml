@@ -1,0 +1,21 @@
+[theme]
+# primärfarbe: sattes blau für buttons, links und aktive elemente.
+# ich verwende #2563EB – das ist ein standard-design-blau, das auf weißem hintergrund
+# gut lesbar und kontrastreich ist.
+primaryColor = "#2563EB"
+
+# haupthintergrund: reines weiß. kombiniert mit der sekundärfarbe entsteht
+# ein klarer kontrast zwischen hauptfläche und karten/seitenleiste.
+backgroundColor = "#FFFFFF"
+
+# hintergrund für seitenleiste, metriken und sonstige karten.
+# #F1F5F9 ist ein sehr helles schieferblau – ruhig, nicht grell.
+secondaryBackgroundColor = "#F1F5F9"
+
+# textfarbe: sehr dunkles marine (#0F172A). kein reines schwarz,
+# das ist etwas weicher für die augen.
+textColor = "#0F172A"
+
+# schrift: sans serif ist streamlits standard-kategorie für systemschriften
+# (inter, segoe ui, helvetica je nach betriebssystem).
+font = "sans serif"
