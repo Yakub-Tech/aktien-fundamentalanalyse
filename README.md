@@ -1,10 +1,10 @@
 voraussetzung: python 3 ist installiert und man befindet sich im projektordner.
 
 venv erstellen (einmalig):
-python3 -m venv venv
+python3 -m venv .venv
 
 venv aktivieren (jedes mal bevor man etwas startet):
-source venv/bin/activate
+source .venv/bin/activate
 
 abhängigkeiten installieren (einmalig nach dem aktivieren):
 pip install streamlit yfinance requests beautifulsoup4 pandas fpdf2 matplotlib
