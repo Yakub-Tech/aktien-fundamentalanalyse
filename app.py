@@ -750,19 +750,44 @@ with st.sidebar:
         st.success("Summe: 100 %")
 
 
+# löscht alte aktiendaten aus dem session_state damit nichts veraltetes stehen bleibt
+def leere_aktien_session():
+    for key in ["haupt_ticker", "kurshistorie", "letzter_schlusskurs", "fundamentaldaten",
+                "forward_kgv_quelle", "kpi_forward_kgv", "kpi_kgv",
+                "kpi_kbv", "kpi_dividendenrendite", "peer_kpis_liste",
+                "historische_eps", "kgv_verlauf"]:
+        st.session_state.pop(key, None)
+
+
 # daten abrufen wenn das formular abgeschickt wurde
 if abgeschickt:
-    kurshistorie = lade_kurshistorie(ticker, start, ende)
+    # ticker säubern leerzeichen weg und großschreiben
+    ticker = ticker.strip().upper()
 
-    if kurshistorie is None:
-        st.error("Keine Kursdaten gefunden. Bitte Ticker und Zeitraum prüfen.")
-        # alte daten aus session_state entfernen damit nichts veraltetes angezeigt wird
-        for key in ["haupt_ticker", "kurshistorie", "letzter_schlusskurs", "fundamentaldaten",
-                    "forward_kgv_quelle", "kpi_forward_kgv", "kpi_kgv",
-                    "kpi_kbv", "kpi_dividendenrendite", "peer_kpis_liste",
-                    "historische_eps", "kgv_verlauf"]:
-            st.session_state.pop(key, None)
+    # eingaben prüfen bevor wir daten abrufen
+    eingabe_gueltig = True
+
+    if ticker == "":
+        st.error("Bitte ein Tickersymbol eingeben.")
+        leere_aktien_session()
+        eingabe_gueltig = False
+    elif start >= ende:
+        st.error("Das Startdatum muss vor dem Enddatum liegen.")
+        leere_aktien_session()
+        eingabe_gueltig = False
+
+    # nur abrufen wenn die eingaben passen
+    if not eingabe_gueltig:
+        kurshistorie = None
     else:
+        kurshistorie = lade_kurshistorie(ticker, start, ende)
+
+    # ticker existiert nicht oder lieferte keine daten
+    if eingabe_gueltig and kurshistorie is None:
+        st.error("Keine Kursdaten gefunden. Bitte Ticker und Zeitraum prüfen.")
+        leere_aktien_session()
+
+    if kurshistorie is not None:
         # aktuellen kurs ermitteln und alle kpis für die hauptaktie berechnen
         letzter_schlusskurs = kurshistorie["Close"].iloc[-1]
         kpis = berechne_alle_kpis(ticker, letzter_schlusskurs)
