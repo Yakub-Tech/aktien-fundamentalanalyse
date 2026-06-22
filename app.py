@@ -65,6 +65,14 @@ def lade_kurshistorie(ticker, start, ende):
         return None
 
 
+# yfinance liefert für fehlende felder manchmal nan statt None
+# nan besteht keine None-prüfung deshalb wandeln wir es hier in echtes None um
+def nan_zu_none(wert):
+    if pd.isna(wert):
+        return None
+    return wert
+
+
 # holt die fundamentaldaten marktkapitalisierung eps buchwert und dividende über yfinance
 def lade_fundamentaldaten(ticker):
     try:
@@ -73,10 +81,11 @@ def lade_fundamentaldaten(ticker):
 
         # die vier benötigten felder einzeln auslesen
         # get statt eckiger klammer verwenden damit fehlende felder nicht zum absturz führen
-        marktkapitalisierung = info.get("marketCap")
-        gewinn_je_aktie = info.get("trailingEps")
-        buchwert_je_aktie = info.get("bookValue")
-        dividende_je_aktie = info.get("dividendRate")
+        # nan_zu_none fängt fehlende werte ab die yfinance als nan liefert
+        marktkapitalisierung = nan_zu_none(info.get("marketCap"))
+        gewinn_je_aktie = nan_zu_none(info.get("trailingEps"))
+        buchwert_je_aktie = nan_zu_none(info.get("bookValue"))
+        dividende_je_aktie = nan_zu_none(info.get("dividendRate"))
 
         fundamentaldaten = {
             "Marktkapitalisierung": marktkapitalisierung,
@@ -95,7 +104,7 @@ def lade_forward_kgv_yfinance(ticker):
     try:
         aktie = yf.Ticker(ticker)
         info = aktie.info
-        return info.get("forwardPE")
+        return nan_zu_none(info.get("forwardPE"))
     except Exception:
         return None
 
@@ -171,7 +180,14 @@ def lade_letzten_kurs(ticker):
         verlauf = aktie.history(period="5d")
         if verlauf.empty:
             return None
-        return verlauf["Close"].iloc[-1]
+
+        # leere schlusskurse entfernen sonst ist die letzte zeile am laufenden handelstag oft nan
+        # ohne dieses dropna käme bei iloc[-1] ein nan-kurs zurück und alle kpis würden nan
+        close_serie = verlauf["Close"].dropna()
+        if close_serie.empty:
+            return None
+
+        return close_serie.iloc[-1]
     except Exception:
         return None
 
@@ -284,7 +300,8 @@ def berechne_alle_kpis(ticker, kurs):
 
 # übersetzt einen kpi wert bei dem niedriger besser ist in punkte zwischen 0 und 100
 def normalisiere_niedriger_besser(wert, gut_grenze, schlecht_grenze):
-    if wert is None:
+    # pd.isna fängt None und nan ab sonst würde nan durch alle prüfungen rutschen
+    if wert is None or pd.isna(wert):
         return None
     # lineare normalisierung zwischen schlecht grenze 0 punkte und gut grenze 100 punkte
     punkte = (schlecht_grenze - wert) / (schlecht_grenze - gut_grenze) * 100
@@ -298,7 +315,8 @@ def normalisiere_niedriger_besser(wert, gut_grenze, schlecht_grenze):
 
 # übersetzt einen kpi wert bei dem höher besser ist in punkte zwischen 0 und 100
 def normalisiere_hoeher_besser(wert, gut_grenze, schlecht_grenze):
-    if wert is None:
+    # pd.isna fängt None und nan ab sonst würde nan durch alle prüfungen rutschen
+    if wert is None or pd.isna(wert):
         return None
     punkte = (wert - schlecht_grenze) / (gut_grenze - schlecht_grenze) * 100
     if punkte > 100:
@@ -1019,8 +1037,9 @@ else:
                 })
 
             # rundet werte oder gibt n/a zurück
+            # pd.isna fängt sowohl None als auch nan ab das yfinance bei fehlenden werten liefert
             def fmt(wert, stellen=2):
-                if wert is None:
+                if wert is None or pd.isna(wert):
                     return "n/a"
                 return round(wert, stellen)
 
