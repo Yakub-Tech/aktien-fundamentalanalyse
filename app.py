@@ -8,6 +8,7 @@ import re
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
+import altair as alt
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -952,7 +953,35 @@ else:
                 "Grenzen sind Modellannahmen."
             )
 
-            st.bar_chart(punkte_uebersicht)
+            # balkendiagramm mit altair statt st.bar_chart bauen
+            # nur so kann ich den winkel der x-achsen-beschriftung selbst festlegen
+            # reset_index macht aus dem kpi-namen im index eine normale spalte die altair als x-achse braucht
+            punkte_fuer_chart = punkte_uebersicht.reset_index()
+            punkte_fuer_chart.columns = ["KPI", "Punkte"]
+
+            # mark_bar erzeugt balken, encode legt fest welche spalte auf welche achse kommt
+            # labelAngle=-30 dreht die beschriftung leicht schräg statt senkrecht
+            # altair sortiert die x-achse standardmäßig alphabetisch, das passt zur punkte-reihe darunter
+            balken_diagramm = alt.Chart(punkte_fuer_chart).mark_bar().encode(
+                x=alt.X("KPI", axis=alt.Axis(labelAngle=-30, title=None)),
+                y=alt.Y("Punkte", scale=alt.Scale(domain=[0, 100])),
+            )
+            st.altair_chart(balken_diagramm, use_container_width=True)
+
+            # die erreichten punkte zusätzlich als zahlen unter der grafik zeigen
+            # in diesem zweig ist gesamtscore nicht None also sind alle vier punkte vorhanden
+            # deshalb kann ich hier direkt runden ohne None-prüfung
+            # so sieht man auch bei einem kpi mit 0 punkten den wert obwohl die grafik dort keinen balken zeigt
+            # punkte als kleine graue caption-zeile statt großer st.metric-kacheln
+            # so wirkt die angabe zugehörig zur grafik und nicht wie ein eigener block
+            # reihenfolge wie in der grafik: dividende, forward kgv, kbv, kgv
+            st.caption(
+                "Erreichte Punkte je KPI (0–100):  "
+                "Dividende " + str(round(punkte_dict["Dividende"], 1)) + "  |  "
+                "Forward-KGV " + str(round(punkte_dict["Forward KGV"], 1)) + "  |  "
+                "KBV " + str(round(punkte_dict["KBV"], 1)) + "  |  "
+                "KGV " + str(round(punkte_dict["KGV"], 1))
+            )
 
     # tab 2 kurs und korridor
     # kursverlauf und kgv korridor nebeneinander rohdaten in einklappbaren bereichen
@@ -1092,7 +1121,19 @@ else:
                     {"Score": alle_scores},
                     index=alle_ticker,
                 )
-                st.bar_chart(score_tabelle)
+
+                # wie in der übersicht baue ich das diagramm mit altair statt st.bar_chart
+                # nur so kann ich die x-achsen-beschriftung schräg stellen
+                # reset_index macht aus dem ticker im index eine normale spalte für die x-achse
+                score_fuer_chart = score_tabelle.reset_index()
+                score_fuer_chart.columns = ["Ticker", "Score"]
+
+                # labelAngle=-30 dreht die ticker-namen leicht schräg statt senkrecht
+                score_diagramm = alt.Chart(score_fuer_chart).mark_bar().encode(
+                    x=alt.X("Ticker", axis=alt.Axis(labelAngle=-30, title=None)),
+                    y=alt.Y("Score", scale=alt.Scale(domain=[0, 100])),
+                )
+                st.altair_chart(score_diagramm, use_container_width=True)
             else:
                 st.info("Kein Score – Gewichte müssen 100 % ergeben.")
 
