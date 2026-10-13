@@ -1,0 +1,10 @@
+streamlit==1.64.0
+yfinance==1.7.0
+requests==2.33.0
+beautifulsoup4==4.14.3
+pandas==2.3.3
+altair==5.5.0
+matplotlib==3.9.4
+fpdf2==2.8.4
+Pillow==12.3.0
+curl-cffi==0.15.0

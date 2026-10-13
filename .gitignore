@@ -20,3 +20,13 @@ dist/
 *.egg-info/
 
 aktueller_stand.md
+
+# Lokale Zugangsdaten und Arbeitsdateien
+.env
+.env.*
+!.env.example
+.agents/
+.codex/
+.claude/
+graphify-out/
+.pytest_cache/

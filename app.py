@@ -254,11 +254,8 @@ def berechne_kbv(kurs, buchwert_je_aktie):
 
 # formel dividendenrendite ist dividende je aktie durch kurs mal 100
 def berechne_dividendenrendite(dividende_je_aktie, kurs):
-    if kurs is None or kurs <= 0:
+    if kurs is None or kurs <= 0 or dividende_je_aktie is None:
         return None
-    # keine dividende gemeldet also 0 prozent das ist ein gültiger wert
-    if dividende_je_aktie is None:
-        return 0.0
     return (dividende_je_aktie / kurs) * 100
 
 
@@ -442,6 +439,8 @@ def normalisiere_gewichte():
         # proportional zur bisherigen verteilung aufteilen
         w1 = round(restbetrag * st.session_state[andere_keys[0]] / alte_summe)
         w2 = round(restbetrag * st.session_state[andere_keys[1]] / alte_summe)
+        # Rundung darf für den dritten Regler keinen negativen Rest erzeugen.
+        w2 = min(w2, restbetrag - w1)
         # der dritte bekommt den rest damit die summe exakt 100 ergibt
         w3 = restbetrag - w1 - w2
         st.session_state[andere_keys[0]] = w1
